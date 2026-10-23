@@ -1,0 +1,6 @@
+# Запуск API без учебных задержек:
+# docker compose -f compose.yaml -f tools/compose.no-latency.yaml up -d
+services:
+  api:
+    environment:
+      DEMO_LATENCY: "0"

@@ -59,10 +59,18 @@ class Client:
         return data
 
 
+def reset():
+    with open(os.path.join(ROOT, 'database', 'reset.sql')) as file:
+        psql(file.read())
+
+
+def tearDownModule():
+    reset()
+
+
 class ApiTest(unittest.TestCase):
     def setUp(self):
-        with open(os.path.join(ROOT, 'database', 'reset.sql')) as file:
-            psql(file.read())
+        reset()
         self.editor = Client('editor')
         self.viewer = Client('viewer')
 
