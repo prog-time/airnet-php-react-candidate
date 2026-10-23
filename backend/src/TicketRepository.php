@@ -12,7 +12,10 @@ class TicketRepository
 
     public function find($id)
     {
-        $row = pg_fetch_assoc(query('SELECT t.id, t.title, t.description, t.status, t.updated_at, s.id AS source_id, s.name AS source_name FROM tickets t LEFT JOIN sources s ON s.id=t.source_id WHERE t.id=$1', array($id)));
+        if (!self::isDbInteger($id)) {
+            return null;
+        }
+        $row =pg_fetch_assoc(query('SELECT t.id, t.title, t.description, t.status, t.updated_at, s.id AS source_id, s.name AS source_name FROM tickets t LEFT JOIN sources s ON s.id=t.source_id WHERE t.id=$1', array($id)));
         if (!$row) {
             return null;
         }
@@ -47,17 +50,41 @@ class TicketRepository
         return $rows;
     }
 
+    public function sourceExists($sourceId)
+    {
+        return self::isDbInteger($sourceId) && (bool) pg_fetch_assoc(query('SELECT id FROM sources WHERE id=$1', array($sourceId)));
+    }
+
+    // Заявка блокируется до конца транзакции: параллельные изменения
+    // одной заявки выполняются по очереди и видят актуальный источник
     public function changeSource($id, $sourceId, array $employee)
     {
-        $ticket = pg_fetch_assoc(query('SELECT source_id FROM tickets WHERE id=$1', array($id)));
-        if (!$ticket) {
-            respond(404, array('error' => 'not_found', 'message' => 'Заявка не найдена'));
+        query('BEGIN');
+        try {
+            $ticket = pg_fetch_assoc(query('SELECT status, source_id FROM tickets WHERE id=$1 FOR UPDATE', array($id)));
+            if (!$ticket) {
+                query('ROLLBACK');
+                respond(404, array('error' => 'not_found', 'message' => 'Заявка не найдена'));
+            }
+            if ($ticket['status'] === 'archived') {
+                query('ROLLBACK');
+                respond(403, array('error' => 'archived', 'message' => 'Архивная заявка доступна только для чтения'));
+            }
+            if ($ticket['source_id'] === null || (int) $ticket['source_id'] !== $sourceId) {
+                query('UPDATE tickets SET source_id=$1, updated_at=clock_timestamp() WHERE id=$2', array($sourceId, $id));
+                query('INSERT INTO ticket_history(ticket_id, employee_id, old_source_id, new_source_id) VALUES($1,$2,$3,$4)', array($id, $employee['id'], $ticket['source_id'], $sourceId));
+            }
+            query('COMMIT');
+        } catch (Throwable $error) {
+            @pg_query(db(), 'ROLLBACK');
+            throw $error;
         }
-        if (!pg_fetch_assoc(query('SELECT id FROM sources WHERE id=$1', array($sourceId)))) {
-            respond(400, array('error' => 'invalid_source', 'message' => 'Источник не найден'));
-        }
-        query('UPDATE tickets SET source_id=$1, updated_at=clock_timestamp() WHERE id=$2', array($sourceId, $id));
-        query('INSERT INTO ticket_history(ticket_id, employee_id, old_source_id, new_source_id) VALUES($1,$2,$3,$4)', array($id, $employee['id'], $ticket['source_id'], $sourceId));
         return $this->find($id);
+    }
+
+    // id вне диапазона integer PostgreSQL не существует, а не ломает запрос
+    public static function isDbInteger($value)
+    {
+        return is_int($value) && $value > 0 && $value <= 2147483647;
     }
 }
