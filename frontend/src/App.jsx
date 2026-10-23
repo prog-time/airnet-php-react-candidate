@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, setCsrf } from './api.js';
 import TicketPanel from './TicketPanel.jsx';
 
@@ -12,6 +12,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  // Применяется только ответ на последний запрос списка
+  const listRequest = useRef(0);
 
   useEffect(() => {
     api('/me').then(data => {
@@ -25,10 +27,11 @@ export default function App() {
   useEffect(() => {
     if (!employee) return;
     let active = true;
+    const request = ++listRequest.current;
     setLoading(true);
     Promise.all([api('/tickets'), api('/sources')]).then(([list, catalog]) => {
       if (!active) return;
-      setTickets(list.tickets);
+      if (request === listRequest.current) setTickets(list.tickets);
       setSources(catalog.sources);
     }).catch(error => {
       if (active) setError(error.message);
@@ -55,6 +58,12 @@ export default function App() {
 
   function ticketChanged(ticket) {
     setTickets(current => current.map(row => row.id === ticket.id ? { ...row, source_name: ticket.source?.name ?? null } : row));
+    const request = ++listRequest.current;
+    api('/tickets').then(list => {
+      if (request === listRequest.current) setTickets(list.tickets);
+    }).catch(error => {
+      if (request === listRequest.current) setError(error.message);
+    });
   }
 
   return (

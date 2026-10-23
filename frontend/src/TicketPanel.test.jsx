@@ -3,49 +3,20 @@ import React from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import TicketPanel from './TicketPanel.jsx';
+import { fakeServer, sources, ticket } from './testServer.js';
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
-const sources = [{ id: 1, name: 'Телефон' }, { id: 2, name: 'Личный кабинет' }, { id: 3, name: 'Сотрудник' }];
 const editor = { id: 2, name: 'Илья Учебный', role: 'editor', permissions: ['FUNC_TICKETS_SOURCE_EDIT', 'FUNC_TICKETS_VIEW'] };
 const viewer = { id: 1, name: 'Анна Примерова', role: 'viewer', permissions: ['FUNC_TICKETS_VIEW'] };
 
-function ticket(id, sourceId = 1, status = 'active') {
-  const source = sources.find(item => item.id === sourceId) ?? null;
-  return { id, title: `Заявка ${id}`, description: `Описание ${id}`, status, source, updated_at: '2026-01-01T00:00:00+00:00' };
-}
-
-// Сервер под управлением теста: каждый запрос ждёт, пока тест не ответит на него
-let requests;
+let server, requests, respond;
 beforeEach(() => {
-  requests = [];
-  vi.stubGlobal('fetch', vi.fn((url, options = {}) => new Promise((resolve, reject) => {
-    const request = { url, method: options.method ?? 'GET', body: options.body, settled: false };
-    request.respond = (status, body) => {
-      request.settled = true;
-      resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
-    };
-    options.signal?.addEventListener('abort', () => {
-      request.settled = true;
-      reject(new DOMException('Aborted', 'AbortError'));
-    });
-    requests.push(request);
-  })));
+  server = fakeServer();
+  ({ requests, respond } = server);
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
-
-function pending(method, url) {
-  const found = requests.filter(item => !item.settled && item.method === method && item.url === url);
-  expect(found, `${method} ${url}`).toHaveLength(1);
-  return found[0];
-}
-
-async function respond(method, url, status, body) {
-  await act(async () => pending(method, url).respond(status, body));
-}
 
 function renderPanel(props) {
   const all = { employee: editor, selectedId: null, sources, onChanged: vi.fn(), ...props };
@@ -57,7 +28,8 @@ test('поздний ответ загрузки предыдущей заявк
   const view = renderPanel({ selectedId: 101 });
   view.select(102);
   await respond('GET', '/api/tickets/102', 200, { ticket: ticket(102, 2), history: [] });
-  await respond('GET', '/api/tickets/101', 200, { ticket: ticket(101, 1), history: [] }).catch(() => {});
+  const late = requests.find(item => item.url === '/api/tickets/101');
+  if (!late.settled) await act(async () => late.respond(200, { ticket: ticket(101, 1), history: [] }));
 
   expect(screen.getByRole('heading', { name: 'Заявка 102' })).toBeTruthy();
   expect(screen.queryByText('Заявка 101')).toBeNull();
@@ -131,4 +103,16 @@ test('архивная заявка и роль просмотра доступ�
   view.rerender(<TicketPanel {...view.props} employee={viewer} selectedId={101} />);
   await respond('GET', '/api/tickets/101', 200, { ticket: ticket(101), history: [] });
   expect(screen.queryByRole('button', { name: 'Сохранить' })).toBeNull();
+});
+
+test('ошибка загрузки карточки показывается, в том числе ответ не в JSON', async () => {
+  const view = renderPanel({ selectedId: 999 });
+  await respond('GET', '/api/tickets/999', 404, { error: 'not_found', message: 'Заявка не найдена' });
+  expect(screen.getByRole('alert').textContent).toBe('Заявка не найдена');
+  expect(screen.queryByText('Загрузка карточки…')).toBeNull();
+
+  view.select(101);
+  expect(screen.queryByRole('alert')).toBeNull();
+  await respond('GET', '/api/tickets/101', 502, '<html>Bad Gateway</html>');
+  expect(screen.getByRole('alert').textContent).toBe('Сервер недоступен (HTTP 502)');
 });
