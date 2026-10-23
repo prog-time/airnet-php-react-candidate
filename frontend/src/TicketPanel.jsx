@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
 
 export default function TicketPanel({ employee, selectedId, sources, onChanged }) {
@@ -6,42 +6,62 @@ export default function TicketPanel({ employee, selectedId, sources, onChanged }
   const [history, setHistory] = useState([]);
   const [sourceId, setSourceId] = useState('');
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [savingId, setSavingId] = useState(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  // Ответы применяются к карточке, только если она всё ещё выбрана
+  const currentId = useRef(selectedId);
+  const savingRef = useRef(false);
 
   useEffect(() => {
-    if (!selectedId) {
-      setTicket(null);
-      return;
-    }
-    setLoading(true);
+    currentId.current = selectedId;
+    setTicket(null);
+    setHistory([]);
     setError('');
     setMessage('');
-    api(`/tickets/${selectedId}`).then(data => {
+    if (!selectedId) {
+      setLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setLoading(true);
+    api(`/tickets/${selectedId}`, { signal: controller.signal }).then(data => {
+      if (controller.signal.aborted) return;
       setTicket(data.ticket);
       setHistory(data.history);
       setSourceId(String(data.ticket.source?.id ?? ''));
-    }).catch(error => setError(error.message)).finally(() => setLoading(false));
+    }).catch(error => {
+      if (!controller.signal.aborted) setError(error.message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
   }, [selectedId]);
 
   async function save() {
-    if (!ticket || saving) return;
-    setSaving(true);
+    if (!ticket || savingRef.current) return;
+    const id = ticket.id;
+    savingRef.current = true;
+    setSavingId(id);
     setError('');
     setMessage('');
     try {
-      const data = await api(`/tickets/${ticket.id}/source`, { method: 'POST', body: JSON.stringify({ source_id: Number(sourceId) }) });
+      const data = await api(`/tickets/${id}/source`, { method: 'POST', body: JSON.stringify({ source_id: Number(sourceId) }) });
+      onChanged(data.ticket);
+      if (currentId.current !== id) return;
       setTicket(data.ticket);
       setHistory(data.history);
+      setSourceId(String(data.ticket.source?.id ?? ''));
       setMessage('Источник сохранён');
-      onChanged(data.ticket);
     } catch (error) {
-      setError(error.message);
+      if (currentId.current === id) setError(error.message);
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      setSavingId(null);
     }
   }
+
+  const saving = savingId !== null;
 
   const canEdit = employee.permissions.includes('FUNC_TICKETS_SOURCE_EDIT') && ticket?.status !== 'archived';
   const sourceName = id => sources.find(source => source.id === id)?.name ?? 'Не указан';
