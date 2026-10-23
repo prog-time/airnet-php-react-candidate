@@ -12,17 +12,16 @@ class TicketRepository
 
     public function find($id)
     {
-        $row = pg_fetch_assoc(query('SELECT id, title, description, status, source_id, updated_at FROM tickets WHERE id=$1', array($id)));
+        $row = pg_fetch_assoc(query('SELECT t.id, t.title, t.description, t.status, t.updated_at, s.id AS source_id, s.name AS source_name FROM tickets t LEFT JOIN sources s ON s.id=t.source_id WHERE t.id=$1', array($id)));
         if (!$row) {
             return null;
         }
-        $source = pg_fetch_assoc(query('SELECT id, name FROM sources WHERE id=$1', array($row['source_id'])));
         return array(
             'id' => (int) $row['id'],
             'title' => $row['title'],
             'description' => $row['description'],
             'status' => $row['status'],
-            'source' => array('id' => (int) $source['id'], 'name' => $source['name']),
+            'source' => $row['source_id'] === null ? null : array('id' => (int) $row['source_id'], 'name' => $row['source_name']),
             'updated_at' => $row['updated_at'],
         );
     }
